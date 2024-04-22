@@ -56,6 +56,7 @@ Actuator motors[NUM_MOTORS]{
 alignas(64) atomic<int> d1 = 0;
 alignas(64) atomic<int> d2 = 0;
 alignas(64) atomic<int> d3 = 0;
+alignas(64) atomic<int> terminated = 0;
 
 
 Actuator::ConnectionConfig connection_config;
@@ -84,6 +85,94 @@ void send_pos() {
                 motors[i].set_mode(Actuator::PositionMode);
             }
             motors[i].set_position_um(d[i] * 1000);           
+        }
+    }
+}
+
+// thread function to listen for termination signal
+void read_termination() {
+    while (1) {
+        int c_input = 0;
+        c_input = _getch();
+        if (c_input == KEY_UP) {
+            terminated.store(1);
+        }
+    }
+
+}
+
+// setup parameters
+void get_parameters(float* pitch_amp, float* pitch_freq, float* roll_amp, float* roll_freq, float* z_amp, float* z_freq) {
+    cout << endl << "Enter pitch amplitude (degree)" << endl;
+    while (1) {
+        string input;
+        getline(cin, input);
+        try {
+            *pitch_amp = stod(input) * PI / 180;
+            break;
+        }
+        catch (exception e) {
+            cout << "Error with entry." << endl;
+        }
+    }
+    cout << endl << "Enter pitch frequency (Hz)" << endl;
+    while (1) {
+        string input;
+        getline(cin, input);
+        try {
+            *pitch_freq = stod(input);
+            break;
+        }
+        catch (exception e) {
+            cout << "Error with entry. Please enter an integer." << endl;
+        }
+    }
+    cout << endl << "Enter roll amplitude (degree)" << endl;
+    while (1) {
+        string input;
+        getline(cin, input);
+        try {
+            *roll_amp = stod(input) * PI / 180;
+            break;
+        }
+        catch (exception e) {
+            cout << "Error with entry" << endl;
+        }
+    }
+    cout << endl << "Enter roll frequency (Hz)" << endl;
+    while (1) {
+        string input;
+        getline(cin, input);
+        try {
+            *roll_freq = stod(input);
+            break;
+        }
+        catch (exception e) {
+            cout << "Error with entry" << endl;
+        }
+    }
+    cout << endl << "Enter height amplitude (mm)" << endl;
+    while (1) {
+        string input;
+        getline(cin, input);
+        try {
+            *z_amp = stod(input);
+            break;
+        }
+        catch (exception e) {
+            cout << "Error with entry" << endl;
+        }
+    }
+    cout << endl << "Enter height frequency (Hz)" << endl;
+    while (1) {
+        string input;
+        getline(cin, input);
+        try {
+            *z_freq = stod(input);
+            break;
+        }
+        catch (exception e) {
+            cout << "Error with entry" << endl;
         }
     }
 }
@@ -222,6 +311,7 @@ int main()
     port_number[1] = 6;
     port_number[2] = 8;    
 
+
     connection_config.target_baud_rate_bps = 1000000;// 500000;  //625000 //780000
     connection_config.target_delay_us = 0;
     for (int i = 0; i < NUM_MOTORS; i++) {
@@ -244,15 +334,18 @@ int main()
 
     // follow sine reference for height, pitch, and roll
     // height is in mm, angles are in rad, freq are in Hz
-    float z_amp = 15;
-    float z_offset = 320;
-    float z_freq = 1.7;
-    float pitch_amp = 5 * PI / 180;
+    float z_amp = 1;
+    float z_offset = 300;
+    float z_freq = 10;
+    float pitch_amp = 0 * PI / 180;
     float pitch_offset = 0;
-    float pitch_freq = sqrt(2);
-    float roll_amp = 5 * PI / 180;
+    float pitch_freq = 1;
+    float roll_amp = 0 * PI / 180;
     float roll_offset = 0;
-    float roll_freq = 3;
+    float roll_freq = 1;
+
+    // Get trajectory parameters
+    get_parameters(&pitch_amp, &pitch_freq, &roll_amp, &roll_freq, &z_amp, &z_freq);
 
     // omega
     float z_omega = 2 * PI * z_freq;
@@ -268,11 +361,22 @@ int main()
     motors[1].set_mode(Actuator::PositionMode);
     motors[2].set_mode(Actuator::PositionMode);
     
+    // scan for termination signal
+    thread termination_checker(read_termination);
+
     // timer to get current setpoint
     using clock = std::chrono::steady_clock;
     clock::time_point start = clock::now();
     auto prev = start;
     while (1) {
+        // check for termination signal
+        if (terminated.load()) {
+            motors[0].set_mode(Actuator::SleepMode);
+            motors[1].set_mode(Actuator::SleepMode);
+            motors[2].set_mode(Actuator::SleepMode);
+
+        }
+
         // desired setpoints at the current time step
         clock::time_point now = clock::now();
         float t = float((now - start).count())/1000000000;
