@@ -182,6 +182,14 @@ float* read_gyroscope() {
     return nullptr;
 }
 
+// Set all motors to sleep mode
+void reset_motors() {
+    for (int i = 0; i < NUM_MOTORS; i++) {
+        motors[i].set_mode(Actuator::SleepMode);
+    }
+}
+
+
 // Calculates the required actuator lengths given height and orientation
 // h, g, d_retracted, aw2: same definition as in main
 float* inverse_kinematics(float z_des, float pitch_des, float roll_des) {
@@ -309,8 +317,44 @@ int main()
     // Hard-coded comport number
     port_number[0] = 3;
     port_number[1] = 6;
-    port_number[2] = 8;    
-
+    port_number[2] = 8;
+    // Read comport number
+    cout << endl << "Enter port number 1" << endl;
+    while (1) {
+        string input;
+        getline(cin, input);
+        try {
+            port_number[0] = stoi(input);
+            break;
+        }
+        catch (exception e) {
+            cout << "Error with entry." << endl;
+        }
+    }
+    cout << endl << "Enter port number 2" << endl;
+    while (1) {
+        string input;
+        getline(cin, input);
+        try {
+            port_number[1] = stoi(input);
+            break;
+        }
+        catch (exception e) {
+            cout << "Error with entry." << endl;
+        }
+    }
+    cout << endl << "Enter port number 3" << endl;
+    while (1) {
+        string input;
+        getline(cin, input);
+        try {
+            port_number[2] = stoi(input);
+            break;
+        }
+        catch (exception e) {
+            cout << "Error with entry." << endl;
+        }
+    }
 
     connection_config.target_baud_rate_bps = 1000000;// 500000;  //625000 //780000
     connection_config.target_delay_us = 0;
@@ -371,10 +415,9 @@ int main()
     while (1) {
         // check for termination signal
         if (terminated.load()) {
-            motors[0].set_mode(Actuator::SleepMode);
-            motors[1].set_mode(Actuator::SleepMode);
-            motors[2].set_mode(Actuator::SleepMode);
-
+            reset_motors();
+            printf("Motion terminated");
+            break;
         }
 
         // desired setpoints at the current time step
@@ -385,7 +428,14 @@ int main()
         float roll_des = roll_amp * sin(roll_omega * t) + roll_offset;
 
         // Compute inverse kinematics
-        ds = inverse_kinematics(z_des, pitch_des, roll_des);
+        try {
+            ds = inverse_kinematics(z_des, pitch_des, roll_des);
+        } catch(const std::exception& e) {
+            reset_motors();
+            printf("reached unreachable setpoint!");
+            break;
+        }
+        
         // Send commands to motors
         d1.store(ds[0]);
         d2.store(ds[1]);
