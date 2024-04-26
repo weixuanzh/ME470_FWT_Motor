@@ -112,9 +112,9 @@ void send_pos() {
         auto start = std::chrono::steady_clock::now();
         for (int i = 0; i < NUM_MOTORS; i++) {
             if (motors[i].get_mode() == Actuator::SleepMode) {
-                motors[i].set_mode(Actuator::PositionMode);
+                motors[i].set_mode(Actuator::ForceMode);
             }
-            motors[i].set_position_um(d[i] * 1000);           
+            motors[i].set_force_mN(d[i] * 1000);           
         }
         auto end = std::chrono::steady_clock::now();
         // printf("\n time lasped: %f us", (end - start).count() / 1000.0);
@@ -485,9 +485,9 @@ int main()
 
     // Continuous send position setpoints
     thread command_thread(send_pos);
-    motors[0].set_mode(Actuator::PositionMode);
-    motors[1].set_mode(Actuator::PositionMode);
-    motors[2].set_mode(Actuator::PositionMode);
+    motors[0].set_mode(Actuator::ForceMode);
+    motors[1].set_mode(Actuator::ForceMode);
+    motors[2].set_mode(Actuator::ForceMode);
     
     // scan for termination signal
     //thread termination_checker(read_termination);
@@ -497,6 +497,10 @@ int main()
     clock::time_point start = clock::now();
     auto prev = start;
     int i = 0;
+    int l1 = 0;
+    int l2 = 0;
+    int l3 = 0;
+    float Kp = 5;
     while (1) {
         // check for termination signal
         // if (terminated.load()) {
@@ -513,10 +517,15 @@ int main()
         }
         // Send commands to motors
         auto start_1 = clock::now();
+        l1 = motors[0].get_position_um() / 1000;
+        l2 = motors[1].get_position_um() / 1000;
+        l3 = motors[2].get_position_um() / 1000;
 
-        d1.store(d1s[int(ceil(t))]);
-        d2.store(d2s[int(ceil(t))]);
-        d3.store(d3s[int(ceil(t))]);
+        d1.store(Kp * (d1s[int(ceil(t))] - l1));
+        d2.store(Kp * (d2s[int(ceil(t))] - l2));
+        d3.store(Kp * (d3s[int(ceil(t))] - l3));
+
+
         auto end = clock::now();
 
 
