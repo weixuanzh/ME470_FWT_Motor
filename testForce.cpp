@@ -109,14 +109,15 @@ void send_pos() {
         d[0] = d1.load();
         d[1] = d2.load();
         d[2] = d3.load();
-        auto start = std::chrono::steady_clock::now();
+        // printf("\n %f", d[0]);
+        // auto start = std::chrono::steady_clock::now();
         for (int i = 0; i < NUM_MOTORS; i++) {
             if (motors[i].get_mode() == Actuator::SleepMode) {
                 motors[i].set_mode(Actuator::ForceMode);
             }
             motors[i].set_force_mN(d[i] * 1000);           
         }
-        auto end = std::chrono::steady_clock::now();
+        // auto end = std::chrono::steady_clock::now();
         // printf("\n time lasped: %f us", (end - start).count() / 1000.0);
     }
 }
@@ -435,13 +436,13 @@ int main()
         motors[i].set_new_comport(port_number[i]);
         motors[i].init();
         motors[i].enable();
-        motors[i].tune_position_controller(30000, 2000, 0, 30000);
     }
     printf("\nmotors connected!");
     thread mthread(motor_comms); //process motor communications in seperate thread
     // Reset to sleep mode to clear comm timeout errors
     for (int i = 0; i < NUM_MOTORS; i++) {
         motors[i].set_mode(Actuator::SleepMode);
+        motors[i].zero_position();
     }   
 
     // follow sine reference for height, pitch, and roll
@@ -492,15 +493,44 @@ int main()
     // scan for termination signal
     //thread termination_checker(read_termination);
 
-    // timer to get current setpoint
     using clock = std::chrono::steady_clock;
-    clock::time_point start = clock::now();
-    auto prev = start;
     int i = 0;
     int l1 = 0;
     int l2 = 0;
     int l3 = 0;
-    float Kp = 5;
+    float Kp = 7.5;
+
+    // position errors in mm
+    float e1 = 1000;
+    float e2 = 1000;
+    float e3 = 1000;
+    float tolerance = 8;
+
+
+
+    // get current time
+    auto start = std::chrono::steady_clock::now();
+    printf("\n swing-up started!");
+    float Kp_up = 5;
+    while (e1 > tolerance || e2 > tolerance || e3 > tolerance) {
+        // calculate required forces
+        auto t = (std::chrono::steady_clock::now() - start).count()/1000000000;
+        float coeff = tanh(t * 0.3);
+        l1 = motors[0].get_position_um() / 1000;
+        l2 = motors[1].get_position_um() / 1000;
+        l3 = motors[2].get_position_um() / 1000;
+        
+        e1 = d1s[0] - l1;
+        e2 = d2s[0] - l2;
+        e3 = d3s[0] - l3;
+        // printf("\n error is: %f", e1);
+        d1.store(Kp_up * e1 * coeff);
+        d2.store(Kp_up * e2 * coeff);
+        d3.store(Kp_up * e3 * coeff);
+    }
+    printf("\n swing-up completed!");
+
+    start = std::chrono::steady_clock::now();
     while (1) {
         // check for termination signal
         // if (terminated.load()) {
@@ -512,27 +542,33 @@ int main()
         // desired setpoints at the current time step
         clock::time_point now = clock::now();
         float t = float((now - start).count())/1000000.0;
-        if (t > duration * 1000) {
+        if (t > duration * 1000 - 500) {
+            //reset_motors();
+            d1.store(0);
+            d2.store(0);
+            d3.store(0);
+            Sleep(1000);
+            reset_motors();
             break;
         }
         // Send commands to motors
-        auto start_1 = clock::now();
+        // auto start_1 = clock::now();
         l1 = motors[0].get_position_um() / 1000;
         l2 = motors[1].get_position_um() / 1000;
         l3 = motors[2].get_position_um() / 1000;
 
-        d1.store(Kp * (d1s[int(ceil(t))] - l1));
-        d2.store(Kp * (d2s[int(ceil(t))] - l2));
-        d3.store(Kp * (d3s[int(ceil(t))] - l3));
+        d1.store(Kp * (d1s[int(ceil(t))] - l1) + 11.76);
+        d2.store(Kp * (d2s[int(ceil(t))] - l2) + 11.76);
+        d3.store(Kp * (d3s[int(ceil(t))] - l3) + 11.76);
+        printf("\n tracking error: %f", d1s[int(ceil(t))] - l1);
 
-
-        auto end = clock::now();
+        // auto end = clock::now();
 
 
         // printf("\n time lasped: %f us", (end - start_1).count() / 1000.0);
         // prev = now;
     }
-    reset_motors();
+    //reset_motors();
 
     return 1;
 }

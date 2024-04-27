@@ -435,7 +435,7 @@ int main()
         motors[i].set_new_comport(port_number[i]);
         motors[i].init();
         motors[i].enable();
-        motors[i].tune_position_controller(30000, 2000, 0, 30000);
+        motors[i].tune_position_controller(30000, 2000, 200, 30000);
     }
     printf("\nmotors connected!");
     thread mthread(motor_comms); //process motor communications in seperate thread
