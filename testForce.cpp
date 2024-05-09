@@ -36,8 +36,13 @@ using namespace std::literals::chrono_literals;
 
 //Define Keyboad inputs to console
 #define KEY_UP      72
-
 #define NUM_MOTORS 3
+
+#define SWING_UP_MOTION 114
+#define SWING_UP_TIME 3000
+#define SHAFT_MASS 1.3
+#define GRAV_CONST 9.81
+
 // Motion parameters
 float duration = 15.0;
 int nsteps = floor(duration * 1000);
@@ -48,25 +53,26 @@ float h = 150; // distance between top ball joints
 float actuator_width = 60; // distance between pin center and actuator centerline
 float aw2 = actuator_width * actuator_width;
 float d_retracted = 213; // length of fully retracted actuator (from connection with pin joint to center of ball joint)
+
+// THIS IS CURRENTLY NOT USED
+// parameters to read from gyroscope from serial port
 DWORD COM_BAUD_RATE = CBR_115200;
 SimpleSerial Serial("\\\\.\\COM9", COM_BAUD_RATE);
-// parameters used to read serial ports
 int reply_wait_time = 1;
 string syntax_type = "json";
 string delimiter = ",";
 
-#define SWING_UP_MOTION 114
-#define SWING_UP_TIME 3000
+// stores motor information
 Actuator motors[NUM_MOTORS]{
   {0, "Orca A", 1}
 , {0, "Orca B", 1}
 , {0, "Orca C", 1}
 };
 
-// Position setpoint "buffers" in mm
-alignas(64) atomic<int> d1 = 0;
-alignas(64) atomic<int> d2 = 0;
-alignas(64) atomic<int> d3 = 0;
+// commanded force "buffers" in mN
+alignas(64) atomic<int> f1 = 0;
+alignas(64) atomic<int> f2 = 0;
+alignas(64) atomic<int> f3 = 0;
 // Signals termination of the motions
 alignas(64) atomic<int> terminated = 0;
 // Used for orientation estimation using gyroscope
@@ -86,6 +92,10 @@ float theta_pitch_accel = 0.0;
 // final angle estimates
 float theta_roll = 0.0;
 float theta_pitch = 0.0;
+// force commands computed by the controller
+float f1_command = 0.0;
+float f2_command = 0.0;
+float f3_command = 0.0;
 
 
 Actuator::ConnectionConfig connection_config;
@@ -103,22 +113,18 @@ void motor_comms() {
 }
 
 // Thread function to continuously send position setpoints
-void send_pos() {
-    float d[3];
+void send_force() {
+    float f[3];
     while (1) {
-        d[0] = d1.load();
-        d[1] = d2.load();
-        d[2] = d3.load();
-        // printf("\n %f", d[0]);
-        // auto start = std::chrono::steady_clock::now();
+        f[0] = f1.load();
+        f[1] = f2.load();
+        f[2] = f3.load();
         for (int i = 0; i < NUM_MOTORS; i++) {
             if (motors[i].get_mode() == Actuator::SleepMode) {
                 motors[i].set_mode(Actuator::ForceMode);
             }
             motors[i].set_force_mN(d[i] * 1000);           
         }
-        // auto end = std::chrono::steady_clock::now();
-        // printf("\n time lasped: %f us", (end - start).count() / 1000.0);
     }
 }
 
@@ -210,6 +216,7 @@ void get_parameters(float* pitch_amp, float* pitch_freq, float* roll_amp, float*
     }
 }
 
+// THIS IS CURRENTLY NOT USED - gyroscope is not implemented yet
 // gets orientation and height measurements from MPU 6050 gyroscope
 // updates global variable: omega, 
 // gyroscope should be mounted such that the +y axis (of MPU 6050) points to actuator 1, and +x axis pointing down
@@ -323,7 +330,7 @@ float* inverse_kinematics(float z_des, float pitch_des, float roll_des) {
     return lengths;    
 } 
 
-
+// THIS IS CURRENTLY NOT USED!
 // Moves the platform to a specified orientation smoothly and hold there
 // Must be called after all motors are initialized and connected
 // Use a PID force controller to get to the height
@@ -363,6 +370,22 @@ void swing_up(float z_initial, float pitch_initial, float roll_initial) {
     }
 
     Sleep(SWING_UP_TIME);
+}
+
+// calculates the acceleration of a given trajectory using finite differencing
+void calculate_acceleration(float* position, float t_step, int pos_length, float* acceleration) {
+    float step_sq = t_step * t_step;
+    for (int i = 0; i < pos_length; i++) {
+        // Raw acceleration using finite differencing
+        if (i == 0) {
+            acceleration[i] = (position[i + 1] - 2 * position[i] + 0) / step_sq;
+        } else if (i == pos_length - 1) {
+            acceleration[i] = (0 - 2 * position[i] + position[i - 1]) / step_sq;
+        } else {
+            acceleration[i] = (position[i + 1] - 2 * position[i] + position[i - 1]) / step_sq;
+        }
+    }
+
 }
 
 int main()
@@ -465,11 +488,17 @@ int main()
     float pitch_omega = 2 * PI * pitch_freq;
     float roll_omega = 2 * PI * roll_freq;
 
-    // pre-compute trajectory
+    // pre-compute trajectory (before running in real-time)
+    // for each time step, get required platform height, roll, and pitch, then calculated actuator lengths
+    // actuator lengths at each time step are stored in d1s, d2s, d3s buffers, and they can be accessed directly to
+    // get desired lengths in real time
     float* d1s = (float*) malloc(nsteps * sizeof(float));
     float* d2s = (float*) malloc(nsteps * sizeof(float));
     float* d3s = (float*) malloc(nsteps * sizeof(float));
     for (int i = 0; i < nsteps; i++) {
+        // calculate required platform orientation
+        // currently hard-coded sine function is used
+        // TODO: implement reading setpoint from formatted files (txt, csv for example)
         float z_des = z_amp * sin(z_omega * i / 1000.0) + z_offset;
         float pitch_des = pitch_amp * sin(pitch_omega * i / 1000.0) + pitch_offset;
         float roll_des = roll_amp * sin(roll_omega * i / 1000.0) + roll_offset;
@@ -479,13 +508,8 @@ int main()
         d3s[i] = ds[2];
     }
 
-
-
-    // swing up
-    // swing_up(z_offset, pitch_offset, roll_offset);
-
     // Continuous send position setpoints
-    thread command_thread(send_pos);
+    thread command_thread(send_force);
     motors[0].set_mode(Actuator::ForceMode);
     motors[1].set_mode(Actuator::ForceMode);
     motors[2].set_mode(Actuator::ForceMode);
@@ -500,22 +524,23 @@ int main()
     int l3 = 0;
     float Kp = 7.5;
 
-    // position errors in mm
+    // position errors in mm, initialized to arbitrary number
     float e1 = 1000;
     float e2 = 1000;
     float e3 = 1000;
+    // stopping criteria for swing-up motion (tolerance in mm)
+    // if swing-up motion never completes, either lossen the tolerance or increase gain
     float tolerance = 8;
-
-
-
+    // swing-up proportional controller gain
+    float Kp_up = 5;
     // get current time
     auto start = std::chrono::steady_clock::now();
     printf("\n swing-up started!");
-    float Kp_up = 5;
+    
+    // swing-up motion: reach the required initial position smoothly
     while (e1 > tolerance || e2 > tolerance || e3 > tolerance) {
         // calculate required forces
         auto t = (std::chrono::steady_clock::now() - start).count()/1000000000;
-        float coeff = tanh(t * 0.3);
         l1 = motors[0].get_position_um() / 1000;
         l2 = motors[1].get_position_um() / 1000;
         l3 = motors[2].get_position_um() / 1000;
@@ -523,52 +548,46 @@ int main()
         e1 = d1s[0] - l1;
         e2 = d2s[0] - l2;
         e3 = d3s[0] - l3;
-        // printf("\n error is: %f", e1);
-        d1.store(Kp_up * e1 * coeff);
-        d2.store(Kp_up * e2 * coeff);
-        d3.store(Kp_up * e3 * coeff);
+        // smooth force commands to avoid jerky swing-up motion
+        float coeff = tanh(t * 0.3);
+        f1.store(Kp_up * e1 * coeff);
+        f2.store(Kp_up * e2 * coeff);
+        f3.store(Kp_up * e3 * coeff);
     }
     printf("\n swing-up completed!");
 
     start = std::chrono::steady_clock::now();
     while (1) {
-        // check for termination signal
-        // if (terminated.load()) {
-        //     reset_motors();
-        //     printf("Motion terminated");
-        //     break;
-        // }
-
-        // desired setpoints at the current time step
+        // get desired setpoints at the current time step
         clock::time_point now = clock::now();
         float t = float((now - start).count())/1000000.0;
+        // if reaching the end of duration, command zero forces to actuators and break
         if (t > duration * 1000 - 500) {
-            //reset_motors();
-            d1.store(0);
-            d2.store(0);
-            d3.store(0);
+            f1.store(0);
+            f2.store(0);
+            f3.store(0);
             Sleep(1000);
             reset_motors();
             break;
         }
-        // Send commands to motors
-        // auto start_1 = clock::now();
+        // Send force commands to motors
+        // get motor length feedback
         l1 = motors[0].get_position_um() / 1000;
         l2 = motors[1].get_position_um() / 1000;
         l3 = motors[2].get_position_um() / 1000;
 
-        d1.store(Kp * (d1s[int(ceil(t))] - l1) + 11.76);
-        d2.store(Kp * (d2s[int(ceil(t))] - l2) + 11.76);
-        d3.store(Kp * (d3s[int(ceil(t))] - l3) + 11.76);
-        printf("\n tracking error: %f", d1s[int(ceil(t))] - l1);
+        // calculate control inputs (change the control law here)
+        // d1s, d2s, d3s stores the required actuator lengths at different time steps
+        // currently using proportional controller with gravity compensation
+        f1_command = Kp * (d1s[int(ceil(t))] - l1) + SHAFT_MASS * (GRAV_CONST);
+        f2_command = Kp * (d2s[int(ceil(t))] - l2) + SHAFT_MASS * (GRAV_CONST);
+        f3_command = Kp * (d3s[int(ceil(t))] - l3) + SHAFT_MASS * (GRAV_CONST);
 
-        // auto end = clock::now();
-
-
-        // printf("\n time lasped: %f us", (end - start_1).count() / 1000.0);
-        // prev = now;
+        // Send force commands to motors
+        f1.store(f1_command);
+        f2.store(f2_command);
+        f3.store(f3_command);
     }
-    //reset_motors();
 
     return 1;
 }
